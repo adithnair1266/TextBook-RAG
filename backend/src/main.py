@@ -1,31 +1,36 @@
+import io
 import json
+import tempfile
 import uuid
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 # Import our models
-from models import (ChapterContentResponse, ConfirmedTOC, ConfirmTOCResponse,
+from models import (ConfirmedTOC, ConfirmTOCResponse, ContextExpandedResult,
                     DocumentChaptersResponse, DocumentListResponse,
-                    ErrorResponse, ParseTOCResponse)
-# Import our hierarchical services
-from services import (HierarchicalDocumentReader, apply_page_offset_mapping,
-                      calculate_chapter_boundaries, default_chunking_service,
+                    ErrorResponse, ParseTOCResponse, SimpleChunkListResponse)
+from models.answer import AnswerResponse, CitationInfo, QuestionRequest
+from PIL import Image
+# Import our services - FIXED DocumentReader import
+from services import (apply_page_offset_mapping, calculate_chapter_boundaries,
+                      default_chunking_service, default_context_service,
                       default_document_processor, default_embedding_service,
                       default_toc_service, validate_chapter_data,
                       validate_chapter_mapping, validate_chapters_exist,
                       validate_content_starts_at, validate_toc_structure)
-# Import hierarchical chunker
-from services.chunking_service import TrueHierarchicalChunker
+from services.answer_service import default_answer_service
+# Import DocumentReader directly to avoid recursion
+from services.document_service import DocumentReader
 # Import utilities
 from utils import (cleanup_document_files, ensure_directory_exists,
                    get_pdf_info, parse_toc_pages)
 
 app = FastAPI(
-    title="Hierarchical RAG System API", 
-    version="8.0.0",
-    description="True hierarchical RAG system with tree-based chunking and navigation"
+    title="RAG System API", 
+    version="9.0.0",
+    description="Simple paragraph-based RAG system with context expansion"
 )
 
 # CORS for local development
@@ -41,47 +46,45 @@ app.add_middleware(
 DATA_DIR = Path("../data")
 DOCUMENTS_DIR = DATA_DIR / "documents"
 
-# Initialize services with hierarchical chunking
+# Initialize services - FIXED: Use DocumentReader class directly
 ensure_directory_exists(DOCUMENTS_DIR)
-
-# Set true hierarchical chunker as default
-hierarchical_chunker = TrueHierarchicalChunker()
-default_chunking_service.set_chunker(hierarchical_chunker)
-
-document_reader = HierarchicalDocumentReader(DOCUMENTS_DIR)
+document_reader = DocumentReader(DOCUMENTS_DIR)
 
 @app.get("/")
 async def root():
     return {
-        "message": "Hierarchical RAG System API v8.0 - True Tree Navigation", 
+        "message": "RAG System API v9.0 - Simple & Effective", 
         "status": "healthy",
-        "architecture": "true_hierarchical",
+        "architecture": "paragraph_based",
         "features": [
-            "🌳 True hierarchical chunking with parent-child relationships",
-            "🧭 Tree navigation (ancestors, descendants, siblings)", 
-            "🔍 Context-aware search with automatic expansion",
-            "🎯 Adaptive search with query classification",
-            "📊 Single FAISS index with tree metadata",
-            "🔗 Chunk relationship traversal",
-            "⚡ Efficient tree-based storage",
-            "🎨 Rich TOC parsing with multiple strategies"
+            "📄 Simple paragraph chunking",
+            "🔍 Semantic search with FAISS", 
+            "📖 Context expansion (neighboring paragraphs)",
+            "🎯 Chapter and page filtering",
+            "📊 Clean data storage",
+            "⚡ Fast processing",
+            "🎨 Multiple TOC parsing strategies"
         ]
     }
 
-@app.get("/strategies")
-async def get_strategies():
-    """Get available strategies - now hierarchical only"""
+@app.get("/info")
+async def get_system_info():
+    """Get system information and capabilities"""
     return {
+        "version": "9.0.0",
+        "architecture": "paragraph_based",
+        "chunking_strategy": default_chunking_service.get_strategy_info(),
         "toc_strategies": default_toc_service.get_available_strategies(),
-        "chunking_strategy": "TrueHierarchicalChunker",  # Only one strategy now
         "current_toc_strategy": default_toc_service.strategy.__class__.__name__,
-        "current_chunking_strategy": "TrueHierarchicalChunker",
-        "tree_levels": ["level_1 (chapters)", "level_2 (sections)", "level_3 (paragraphs)", "level_4 (sentences)"],
-        "search_modes": ["adaptive", "level_1", "level_2", "level_3", "level_4"],
-        "navigation_features": ["context_expansion", "drill_down", "sibling_traversal"],
         "embedding_model": default_embedding_service.model_name,
         "embedding_dimension": default_embedding_service.embedding_model.embedding_dim,
-        "embedding_type": "hierarchical_tree"
+        "context_strategies": ["paragraph", "page", "mixed"],
+        "search_features": [
+            "similarity_search",
+            "chapter_filtering", 
+            "context_expansion",
+            "neighboring_paragraphs"
+        ]
     }
 
 @app.post("/parse-toc", response_model=ParseTOCResponse)
@@ -113,7 +116,7 @@ async def parse_toc(
         # Parse TOC pages
         page_list = parse_toc_pages(toc_pages, page_count)
         
-        # Extract and parse TOC with current strategy
+        # Extract and parse TOC
         print(f"Parsing TOC from pages {page_list} using {default_toc_service.strategy.__class__.__name__}...")
         parsed_toc_data = await default_toc_service.parse_toc(str(file_path), page_list)
         
@@ -125,7 +128,6 @@ async def parse_toc(
                 detail="No chapters found in TOC. Please check the page range."
             )
         
-        # Create response using Pydantic model
         return ParseTOCResponse(
             doc_id=doc_id,
             filename=file.filename,
@@ -136,12 +138,10 @@ async def parse_toc(
         )
         
     except HTTPException:
-        # Cleanup and re-raise
         if 'file_path' in locals() and file_path.exists():
             file_path.unlink()
         raise
     except Exception as e:
-        # Cleanup and raise error
         if 'file_path' in locals() and file_path.exists():
             file_path.unlink()
         print(f"TOC parsing error: {str(e)}")
@@ -153,7 +153,7 @@ async def confirm_toc(
     content_starts_at: int = Form(...),
     toc_data: str = Form(...)  # JSON string of the confirmed/edited TOC
 ):
-    """Process document with confirmed/edited TOC data using true hierarchical chunking"""
+    """Process document with confirmed/edited TOC data using paragraph chunking"""
     
     try:
         # Parse the confirmed TOC data
@@ -175,14 +175,12 @@ async def confirm_toc(
         
         print(f"Processing document with {len(confirmed_toc.chapters)} chapters")
         print(f"Content starts at page: {content_starts_at}")
-        print(f"Using chunking strategy: TrueHierarchicalChunker")
+        print(f"Using chunking strategy: {default_chunking_service.strategy_name}")
         print(f"Using embedding model: {default_embedding_service.model_name}")
-        print("🌳 Processing with true hierarchical tree chunking...")
-        print("   Level 1: Chapter nodes (full chapter context)")
-        print("   Level 2: Section nodes (structured subsections)")  
-        print("   Level 3: Paragraph nodes (detailed content)")
-        print("   Level 4: Sentence nodes (precise facts)")
-        print("   🔗 Building parent-child relationships for navigation")
+        print("📄 Processing with simple paragraph chunking...")
+        print("   Split chapters into meaningful paragraphs")
+        print("   Link neighboring paragraphs for context")
+        print("   Generate embeddings with chapter context")
         
         # Validate content_starts_at
         content_validation = validate_content_starts_at(content_starts_at, page_count)
@@ -235,9 +233,9 @@ async def confirm_toc(
             page_count
         )
         
-        print(f"Building hierarchical trees for {len(chapters_with_boundaries)} chapters...")
+        print(f"Processing {len(chapters_with_boundaries)} chapters into paragraphs...")
         
-        # Use the hierarchical processing pipeline
+        # Use the paragraph processing pipeline
         try:
             processing_summary = await default_document_processor.process_document_with_embeddings(
                 str(file_path),
@@ -250,22 +248,14 @@ async def confirm_toc(
                 page_count
             )
             
-            print("✅ Hierarchical document processing completed successfully!")
-            print(f"   🌳 Architecture: {processing_summary['processing_mode']}")
+            print("✅ Document processing completed successfully!")
+            print(f"   📄 Architecture: {processing_summary['processing_mode']}")
             print(f"   📚 Chapters: {processing_summary['chapters_processed']}")
-            print(f"   🧩 Total tree nodes: {processing_summary['total_chunks']}")
-            print(f"   🏗️ Strategy: {processing_summary['chunking_strategy']}")
-            
-            if processing_summary.get('tree_statistics'):
-                print("   📊 Tree structure:")
-                tree_stats = processing_summary['tree_statistics']
-                print(f"      Max depth: {tree_stats.get('max_depth', 0)} levels")
-                for level, count in tree_stats.get('level_breakdown', {}).items():
-                    print(f"      {level}: {count} nodes")
+            print(f"   📝 Paragraphs: {processing_summary['total_chunks']}")
+            print(f"   🔧 Strategy: {processing_summary['chunking_strategy']}")
             
             if processing_summary['embeddings_generated']:
-                embedding_type = processing_summary.get('embedding_type', 'unknown')
-                print(f"   ✅ Embeddings: {embedding_type} with tree navigation")
+                print(f"   ✅ Embeddings: {processing_summary.get('embedding_type', 'generated')}")
             else:
                 print("   ⚠️ Embeddings: Failed (search not available)")
             
@@ -273,25 +263,18 @@ async def confirm_toc(
             final_metadata = document_reader.get_document_metadata(doc_id)
             
             # Create response message
-            tree_info = ""
-            if processing_summary['processing_mode'] == 'hierarchical_trees':
-                tree_stats = processing_summary.get('tree_statistics', {})
-                max_depth = tree_stats.get('max_depth', 0)
-                tree_info = f" with {max_depth}-level tree depth and {processing_summary['total_chunks']} navigable nodes"
-                
-            message = f"Successfully processed {processing_summary['chapters_processed']} chapters using true hierarchical chunking{tree_info}"
+            message = f"Successfully processed {processing_summary['chapters_processed']} chapters into {processing_summary['total_chunks']} paragraphs"
                 
             if processing_summary['embeddings_generated']:
-                message += f" and generated tree-based embeddings with navigation support"
+                message += f" and generated embeddings for semantic search"
             else:
                 message += " (embeddings failed - search not available)"
         
         except Exception as e:
-            print(f"Hierarchical processing failed: {str(e)}")
+            print(f"Document processing failed: {str(e)}")
             cleanup_document_files(doc_id, DOCUMENTS_DIR)
-            raise HTTPException(status_code=500, detail=f"Hierarchical processing failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Document processing failed: {str(e)}")
         
-        # Create response using Pydantic model
         return ConfirmTOCResponse(
             doc_id=doc_id,
             status="processed",
@@ -347,136 +330,73 @@ async def get_document_chapters(doc_id: str):
         raise HTTPException(status_code=500, detail=f"Error reading document data: {str(e)}")
 
 @app.get("/documents/{doc_id}/chapters/{chapter_filename}")
-async def get_chapter_tree(doc_id: str, chapter_filename: str):
-    """Get hierarchical tree structure for a specific chapter"""
+async def get_chapter_chunks(doc_id: str, chapter_filename: str):
+    """Get chunks for a specific chapter"""
     try:
-        chapter_tree_data = document_reader.get_chapter_tree(doc_id, chapter_filename)
+        chapter_data = document_reader.get_chapter_chunks(doc_id, chapter_filename)
         
         return {
             "doc_id": doc_id,
             "chapter_filename": chapter_filename,
-            "chapter_info": chapter_tree_data.get("chapter_info", {}),
-            "tree_structure": chapter_tree_data.get("chunk_tree", {}),
-            "statistics": chapter_tree_data.get("statistics", {}),
-            "navigation_available": True
+            "chapter_info": chapter_data.get("chapter_info", {}),
+            "chunks": chapter_data.get("chunks", []),
+            "total_chunks": len(chapter_data.get("chunks", [])),
+            "architecture": "paragraph_based"
         }
     except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Chapter tree not found")
+        raise HTTPException(status_code=404, detail="Chapter not found")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error reading chapter tree: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error reading chapter: {str(e)}")
 
-@app.get("/documents/{doc_id}/chunks")
+@app.get("/documents/{doc_id}/chunks", response_model=SimpleChunkListResponse)
 async def get_document_chunks(
     doc_id: str,
-    level: int = Query(None, description="Tree level: 1 (chapters), 2 (sections), 3 (paragraphs), 4 (sentences)")
+    chapter_filter: Optional[str] = Query(None, description="Filter by chapter name"),
+    page_filter: Optional[int] = Query(None, description="Filter by page number")
 ):
-    """Get chunks from hierarchical trees, optionally filtered by level"""
+    """Get all chunks from a document with optional filtering"""
     try:
-        chunks = document_reader.get_all_chunks_from_trees(doc_id, level)
+        all_chunks = document_reader.get_all_chunks(doc_id)
         
-        response_data = {
-            "doc_id": doc_id,
-            "chunks": chunks,
-            "total_chunks": len(chunks),
-            "architecture": "hierarchical_tree"
-        }
+        # Apply filters
+        filtered_chunks = all_chunks
         
-        if level:
-            level_names = {1: "chapters", 2: "sections", 3: "paragraphs", 4: "sentences"}
-            response_data["level"] = level
-            response_data["level_name"] = level_names.get(level, f"level_{level}")
-            response_data["message"] = f"Retrieved {len(chunks)} {level_names.get(level, 'chunks')} from tree level {level}"
-        else:
-            response_data["message"] = f"Retrieved {len(chunks)} nodes from all tree levels"
+        if chapter_filter:
+            filtered_chunks = [
+                chunk for chunk in filtered_chunks 
+                if chunk.get("chapter_name") == chapter_filter
+            ]
         
-        return response_data
+        if page_filter:
+            filtered_chunks = [
+                chunk for chunk in filtered_chunks 
+                if chunk.get("page_number") == page_filter
+            ]
+        
+        return SimpleChunkListResponse(
+            doc_id=doc_id,
+            chunks=filtered_chunks,
+            total_chunks=len(filtered_chunks),
+            chapter_filter=chapter_filter,
+            page_filter=page_filter
+        )
         
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Document not found")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error reading chunks: {str(e)}")
 
-@app.get("/documents/{doc_id}/tree-stats")
-async def get_document_tree_stats(doc_id: str):
-    """Get detailed hierarchical tree statistics for a document"""
-    try:
-        tree_stats = document_reader.get_hierarchical_statistics(doc_id)
-        
-        if "error" in tree_stats:
-            raise HTTPException(status_code=422, detail=tree_stats["error"])
-        
-        return tree_stats
-        
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Document not found")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting tree stats: {str(e)}")
-
-@app.get("/documents/{doc_id}/navigate/{chapter_filename}/{chunk_id}")
-async def navigate_chunk(doc_id: str, chapter_filename: str, chunk_id: str):
-    """Get hierarchical navigation for a specific chunk"""
-    try:
-        navigation = document_reader.get_tree_navigation(doc_id, chapter_filename, chunk_id)
-        
-        if "error" in navigation:
-            raise HTTPException(status_code=404, detail=navigation["error"])
-        
-        return {
-            "doc_id": doc_id,
-            "chunk_id": chunk_id,
-            "navigation": navigation,
-            "features_available": [
-                "ancestors (parent context)",
-                "descendants (child details)", 
-                "navigation_path (breadcrumb)",
-                "context_text (enriched content)"
-            ]
-        }
-        
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Document or chapter not found")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting navigation: {str(e)}")
-
-@app.get("/stats")
-async def get_system_stats():
-    """Get system statistics"""
-    try:
-        doc_stats = document_reader.get_document_stats()
-        embedding_stats = default_embedding_service.get_embedding_stats()
-        
-        # Combine stats with hierarchical information
-        combined_stats = {
-            **doc_stats,
-            "embedding_stats": embedding_stats,
-            "system_info": {
-                "architecture": "true_hierarchical",
-                "chunking_strategy": "TrueHierarchicalChunker",
-                "toc_strategy": default_toc_service.strategy.__class__.__name__,
-                "embedding_model": default_embedding_service.model_name,
-                "embedding_type": "hierarchical_tree",
-                "tree_levels": ["level_1", "level_2", "level_3", "level_4"],
-                "navigation_features": ["context_expansion", "drill_down", "sibling_traversal"],
-                "version": "8.0.0"
-            }
-        }
-        
-        return combined_stats
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting stats: {str(e)}")
-
 @app.get("/search/{doc_id}")
 async def search_document(
     doc_id: str, 
     query: str = Query(..., description="Search query"),
     k: int = Query(5, ge=1, le=20, description="Number of results to return"),
-    search_mode: str = Query("adaptive", description="Search mode: adaptive, level_1, level_2, level_3, level_4"),
-    expand_context: bool = Query(True, description="Include parent context in results"),
-    context_levels: int = Query(1, ge=0, le=3, description="Levels of parent context to include")
+    expand_context: bool = Query(True, description="Include neighboring paragraphs"),
+    context_strategy: str = Query("paragraph", description="Context strategy: paragraph, page, mixed"),
+    context_window: int = Query(2, ge=0, le=5, description="Context window size"),
+    chapter_filter: Optional[str] = Query(None, description="Filter by chapter name")
 ):
-    """Search using hierarchical tree navigation with context expansion"""
+    """Search document using paragraph-based semantic search with context expansion"""
     try:
         if not document_reader.document_exists(doc_id):
             raise HTTPException(status_code=404, detail="Document not found")
@@ -487,174 +407,159 @@ async def search_document(
             if not metadata.get("has_embeddings", False):
                 raise HTTPException(
                     status_code=422, 
-                    detail="Document does not have hierarchical embeddings. Search not available."
+                    detail="Document does not have embeddings. Search not available."
                 )
         except:
             pass  # Continue with search attempt
         
-        # Perform hierarchical tree search
-        results = default_embedding_service.search_document(doc_id, query, k, search_mode)
+        # Perform search
+        results = default_embedding_service.search_document(
+            doc_id, query, k, expand_context, context_strategy, context_window, chapter_filter
+        )
         
         if not results:
             return {
                 "doc_id": doc_id,
                 "query": query,
-                "search_mode": search_mode,
                 "results": [],
                 "total_results": 0,
-                "message": "No results found. Document may not have hierarchical embeddings generated."
+                "message": "No results found. Document may not have embeddings generated."
             }
         
         # Add search context information
         search_info = {
             "doc_id": doc_id,
             "query": query,
-            "search_mode": search_mode,
             "expand_context": expand_context,
-            "context_levels": context_levels,
+            "context_strategy": context_strategy,
+            "context_window": context_window,
+            "chapter_filter": chapter_filter,
             "results": results,
             "total_results": len(results),
             "embedding_model": default_embedding_service.model_name,
-            "architecture": "hierarchical_tree"
+            "architecture": "paragraph_based"
         }
-        
-        # Add navigation information if available
-        if results and results[0].get("ancestors"):
-            search_info["navigation_available"] = True
-            search_info["features_used"] = ["tree_navigation", "context_expansion", "adaptive_search"]
-        
-        # Add adaptive search explanation if using adaptive mode
-        if search_mode == "adaptive" and results:
-            levels_used = set(result.get("level", "unknown") for result in results)
-            search_info["adaptive_strategy"] = {
-                "levels_searched": sorted(list(levels_used)),
-                "query_classification": _classify_query_type(query),
-                "navigation_depth": context_levels
-            }
         
         return search_info
         
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Hierarchical search error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Hierarchical search failed: {str(e)}")
+        print(f"Search error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
-@app.get("/search/{doc_id}/navigate/{chunk_id}")
-async def get_search_navigation(doc_id: str, chunk_id: str):
-    """Get hierarchical navigation for a search result chunk"""
+@app.get("/search/{doc_id}/context/{chunk_id}")
+async def get_chunk_context(
+    doc_id: str, 
+    chunk_id: str,
+    strategy: str = Query("paragraph", description="Context strategy: paragraph, page, mixed"),
+    window: int = Query(2, ge=0, le=5, description="Context window size")
+):
+    """Get context for a specific chunk"""
     try:
-        navigation = default_embedding_service.get_chunk_navigation(doc_id, chunk_id)
+        context_result = default_embedding_service.get_chunk_context(
+            doc_id, chunk_id, strategy, window
+        )
         
-        if "error" in navigation:
-            raise HTTPException(status_code=404, detail=navigation["error"])
+        if "error" in context_result:
+            raise HTTPException(status_code=404, detail=context_result["error"])
         
         return {
             "doc_id": doc_id,
             "chunk_id": chunk_id,
-            "navigation": navigation,
-            "available_actions": [
-                "expand_context (get parent nodes)",
-                "drill_down (get child nodes)",
-                "explore_siblings (same level nodes)"
-            ]
+            "strategy": strategy,
+            "window": window,
+            "context": context_result
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting search navigation: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error getting context: {str(e)}")
 
-def _classify_query_type(query: str) -> str:
-    """Helper function to classify query type for adaptive search"""
-    query_lower = query.lower()
-    query_length = len(query.split())
-    
-    if any(word in query_lower for word in ["what is", "define", "definition", "meaning"]):
-        return "factual"
-    elif any(word in query_lower for word in ["how", "process", "steps", "procedure", "explain"]):
-        return "process"
-    elif any(word in query_lower for word in ["compare", "contrast", "difference", "versus", "relationship"]):
-        return "analytical"
-    elif query_length > 10:
-        return "complex"
-    else:
-        return "balanced"
+@app.get("/stats")
+async def get_system_stats():
+    """Get system statistics"""
+    try:
+        doc_stats = document_reader.get_document_stats()
+        embedding_stats = default_embedding_service.get_embedding_stats()
+        
+        combined_stats = {
+            **doc_stats,
+            "embedding_stats": embedding_stats,
+            "system_info": {
+                "architecture": "paragraph_based",
+                "chunking_strategy": default_chunking_service.strategy_name,
+                "toc_strategy": default_toc_service.strategy.__class__.__name__,
+                "embedding_model": default_embedding_service.model_name,
+                "embedding_type": "paragraph_based",
+                "context_strategies": ["paragraph", "page", "mixed"],
+                "version": "9.0.0"
+            }
+        }
+        
+        return combined_stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting stats: {str(e)}")
 
 @app.get("/embeddings/stats")
 async def get_embedding_stats():
-    """Get statistics about hierarchical embeddings across all documents"""
+    """Get embedding statistics"""
     try:
         stats = default_embedding_service.get_embedding_stats()
         return stats
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting embedding stats: {str(e)}")
 
-@app.get("/embeddings/{doc_id}/info")
-async def get_document_embedding_info(doc_id: str):
-    """Get hierarchical embedding information for a specific document"""
-    try:
-        if not document_reader.document_exists(doc_id):
-            raise HTTPException(status_code=404, detail="Document not found")
-        
-        # Try to load the document's embedding info
-        doc_embedding_dir = default_embedding_service.hierarchical_service.embeddings_dir / doc_id
-        info_path = doc_embedding_dir / "embedding_info.json"
-        
-        if not info_path.exists():
-            raise HTTPException(status_code=404, detail="No hierarchical embeddings found for this document")
-        
-        with open(info_path, 'r', encoding='utf-8') as f:
-            embedding_info = json.load(f)
-        
-        return embedding_info
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting embedding info: {str(e)}")
-
 @app.post("/embeddings/{doc_id}/regenerate")
 async def regenerate_embeddings(doc_id: str):
-    """Regenerate hierarchical embeddings for a document"""
+    """Regenerate embeddings for a document"""
     try:
         if not document_reader.document_exists(doc_id):
             raise HTTPException(status_code=404, detail="Document not found")
         
-        # Get document metadata to determine structure
+        # Get document metadata
         metadata = document_reader.get_document_metadata(doc_id)
         
-        if not metadata.get("is_hierarchical"):
-            raise HTTPException(status_code=422, detail="Document is not hierarchical - cannot regenerate tree embeddings")
-        
-        # Load all chapter trees
-        chapter_trees = []
+        # Load all chapter chunks
+        chapter_chunk_lists = []
         for chapter_info in metadata["chapters"]:
-            chapter_data = document_reader.get_chapter_tree(doc_id, chapter_info["filename"])
-            tree_data = chapter_data.get("chunk_tree", {})
+            chapter_data = document_reader.get_chapter_chunks(doc_id, chapter_info["filename"])
+            chunks = chapter_data.get("chunks", [])
             
-            from services.chunking_service import HierarchicalChunkTree
-            tree = HierarchicalChunkTree.from_dict(tree_data)
-            chapter_trees.append(tree)
+            # Convert to SimpleChunk objects
+            from models.simple_chunk import SimpleChunk, SimpleChunkList
+            simple_chunks = []
+            for chunk_data in chunks:
+                chunk = SimpleChunk(**chunk_data)
+                simple_chunks.append(chunk)
+            
+            chunk_list = SimpleChunkList(
+                chunks=simple_chunks,
+                total_chunks=len(simple_chunks),
+                chapter_name=chapter_info["title"],
+                total_word_count=sum(chunk.word_count for chunk in simple_chunks)
+            )
+            chapter_chunk_lists.append(chunk_list)
         
-        if not chapter_trees:
-            raise HTTPException(status_code=404, detail="No hierarchical tree data found for document")
+        if not chapter_chunk_lists:
+            raise HTTPException(status_code=404, detail="No chunk data found for document")
         
-        # Generate new hierarchical embeddings
-        embedding_info = default_embedding_service.embed_document_chunks(doc_id, chapter_trees)
+        # Generate new embeddings
+        embedding_info = default_embedding_service.embed_document_chunks(doc_id, chapter_chunk_lists)
         
         return {
             "doc_id": doc_id,
-            "message": "Hierarchical embeddings regenerated successfully",
+            "message": "Embeddings regenerated successfully",
             "embedding_info": embedding_info,
-            "architecture": "hierarchical_tree"
+            "architecture": "paragraph_based"
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Hierarchical embedding regeneration error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to regenerate hierarchical embeddings: {str(e)}")
+        print(f"Embedding regeneration error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to regenerate embeddings: {str(e)}")
 
 @app.post("/switch-toc-strategy")
 async def switch_toc_strategy(strategy_name: str, **config):
@@ -667,18 +572,18 @@ async def switch_toc_strategy(strategy_name: str, **config):
             "message": f"Switched to {strategy_name} TOC parsing strategy",
             "strategy": strategy_name,
             "config": config,
-            "note": "Hierarchical chunking strategy remains fixed at TrueHierarchicalChunker"
+            "chunking_strategy": default_chunking_service.strategy_name
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/switch-embedding-model")
 async def switch_embedding_model(model_name: str):
-    """Switch the embedding model for hierarchical embeddings"""
+    """Switch the embedding model"""
     try:
         from services.embedding_service import EmbeddingService
 
-        # Create new hierarchical embedding service with different model
+        # Create new embedding service with different model
         new_embedding_service = EmbeddingService(model_name=model_name)
         
         # Update the document processor to use new embedding service
@@ -689,59 +594,259 @@ async def switch_embedding_model(model_name: str):
         default_embedding_service = new_embedding_service
         
         return {
-            "message": f"Switched to {model_name} embedding model for hierarchical embeddings",
+            "message": f"Switched to {model_name} embedding model",
             "model_name": model_name,
             "embedding_dimension": new_embedding_service.embedding_model.embedding_dim,
-            "embedding_type": "hierarchical_tree",
+            "embedding_type": "paragraph_based",
             "note": "New documents will use this model. Existing embeddings unchanged."
         }
         
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to switch embedding model: {str(e)}")
 
+@app.post("/ask/{doc_id}", response_model=AnswerResponse)
+async def ask_question(
+    doc_id: str,
+    request: QuestionRequest
+):
+    """Ask a question and get an AI-generated answer with citations"""
+    try:
+        if not document_reader.document_exists(doc_id):
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Check if document has embeddings
+        try:
+            metadata = document_reader.get_document_metadata(doc_id)
+            if not metadata.get("has_embeddings", False):
+                raise HTTPException(
+                    status_code=422, 
+                    detail="Document does not have embeddings. Question answering not available."
+                )
+        except:
+            pass  # Continue with attempt
+        
+        # Extract search parameters
+        search_params = request.search_params or {}
+        k = search_params.get('k', 5)  # Get more results than needed for answer generation
+        expand_context = search_params.get('expand_context', True)
+        context_strategy = search_params.get('context_strategy', 'paragraph')
+        context_window = search_params.get('context_window', 2)
+        chapter_filter = search_params.get('chapter_filter')
+        
+        # First, perform semantic search
+        search_results = default_embedding_service.search_document(
+            doc_id, request.query, k, expand_context, context_strategy, context_window, chapter_filter
+        )
+        
+        if not search_results:
+            return AnswerResponse(
+                doc_id=doc_id,
+                query=request.query,
+                answer="No relevant information found in the document for your question.",
+                citations=[],
+                chunks_used=0,
+                total_context_words=0,
+                search_strategy=context_strategy,
+                context_expansion=expand_context,
+                success=False,
+                error_message="No search results found",
+                has_embeddings=metadata.get("has_embeddings", True),
+                architecture="paragraph_based"
+            )
+        
+        # Generate answer using search results
+        answer_result = default_answer_service.generate_answer(
+            request.query, 
+            search_results, 
+            request.max_chunks
+        )
+        
+        # Convert citations to response format
+        citation_infos = [
+            CitationInfo(
+                chapter_name=citation.chapter_name,
+                page_number=citation.page_number,
+                chunk_id=citation.chunk_id,
+                citation_text=citation.format_citation()
+            )
+            for citation in answer_result.citations
+        ]
+        
+        return AnswerResponse(
+            doc_id=doc_id,
+            query=request.query,
+            answer=answer_result.answer,
+            citations=citation_infos,
+            chunks_used=answer_result.chunks_used,
+            total_context_words=answer_result.total_context_words,
+            generation_time=answer_result.generation_time,
+            search_strategy=context_strategy,
+            context_expansion=expand_context,
+            success=answer_result.success,
+            error_message=answer_result.error_message,
+            has_embeddings=metadata.get("has_embeddings", True),
+            architecture="paragraph_based"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Question answering error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Question answering failed: {str(e)}")
+
+
+@app.get("/ask/{doc_id}/simple")
+async def ask_simple_question(
+    doc_id: str, 
+    query: str = Query(..., description="Question to ask"),
+    max_chunks: int = Query(2, ge=1, le=5, description="Maximum chunks to use")
+):
+    """Simple question interface - just returns the answer text"""
+    try:
+        # Use the main ask endpoint logic but return simplified response
+        request = QuestionRequest(query=query, max_chunks=max_chunks)
+        response = await ask_question(doc_id, request)
+        
+        if response.success:
+            return {
+                "answer": response.answer,
+                "sources": [citation.citation_text for citation in response.citations],
+                "chunks_used": response.chunks_used
+            }
+        else:
+            return {
+                "answer": response.answer,
+                "sources": [],
+                "error": response.error_message
+            }
+            
+    except HTTPException as e:
+        return {
+            "answer": "Error: " + e.detail,
+            "sources": [],
+            "error": e.detail
+        }
+    except Exception as e:
+        return {
+            "answer": "An error occurred while processing your question.",
+            "sources": [],
+            "error": str(e)
+        }
+
+@app.post("/extract-question")
+async def extract_question(file: UploadFile = File(...)):
+    """Extract text from uploaded image using OCR"""
+    
+    # Validate file type
+    if not file.content_type or not file.content_type.startswith('image/'):
+        raise HTTPException(status_code=400, detail="Only image files are supported")
+    
+    try:
+        # Read the uploaded image
+        image_content = await file.read()
+        
+        # Save to temporary file (PyMuPDF4LLM needs file path)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp_file:
+            temp_file.write(image_content)
+            temp_file_path = temp_file.name
+        
+        try:
+            # Use PyMuPDF4LLM to extract text from image
+            import pymupdf4llm
+            extracted_text = pymupdf4llm.to_markdown(temp_file_path)
+            print(extracted_text)
+            
+            if not extracted_text or len(extracted_text.strip()) < 5:
+                return {
+                    "success": False,
+                    "extracted_text": "",
+                    "message": "No text found in image. Try a clearer photo or type the question manually."
+                }
+            
+            # Basic text cleaning
+            cleaned_text = clean_ocr_text(extracted_text)
+            
+            return {
+                "success": True,
+                "extracted_text": cleaned_text,
+                "raw_text": extracted_text,
+                "message": f"Extracted {len(cleaned_text)} characters. Review and search if correct."
+            }
+            
+        finally:
+            # Clean up temp file
+            import os
+            try:
+                os.unlink(temp_file_path)
+            except:
+                pass
+                
+    except Exception as e:
+        print(f"OCR extraction error: {str(e)}")
+        return {
+            "success": False,
+            "extracted_text": "",
+            "message": f"OCR failed: {str(e)}. Please try typing the question manually."
+        }
+
+
+def clean_ocr_text(text: str) -> str:
+    """Basic OCR text cleaning"""
+    import re
+
+    # Remove markdown formatting that PyMuPDF4LLM adds
+    text = re.sub(r'#{1,6}\s*', '', text)  # Remove headers
+    text = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', text)  # Remove bold/italic
+    text = re.sub(r'`([^`]+)`', r'\1', text)  # Remove code formatting
+    
+    # Clean up common OCR artifacts
+    text = re.sub(r'\n{3,}', '\n\n', text)  # Max 2 newlines
+    text = re.sub(r' {3,}', ' ', text)  # Max 2 spaces
+    text = re.sub(r'[^\x00-\x7F]+', ' ', text)  # Remove non-ASCII
+    
+    # Fix common OCR errors
+    text = re.sub(r'\b[Il1]\b', 'I', text)  # Fix I/l/1 confusion
+    text = re.sub(r'\b[O0]\b', '0', text)  # Fix O/0 confusion
+    
+    # Remove obvious page artifacts
+    text = re.sub(r'Page \d+', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'Chapter \d+', '', text, flags=re.IGNORECASE)
+    print(text)
+    
+    return text.strip()
+
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Starting Hierarchical RAG System API v8.0 - True Tree Navigation!")
-    print("🌳 Data directory:", DATA_DIR.absolute())
+    print("🚀 Starting RAG System API v9.0 - Simple & Effective!")
+    print("📁 Data directory:", DATA_DIR.absolute())
     print(f"📖 TOC Strategy: {default_toc_service.strategy.__class__.__name__}")
-    print(f"🧩 Chunking Strategy: TrueHierarchicalChunker (tree-based only)")
-    print("   📊 Tree Structure:")
-    print("   ├── Level 1: Chapter nodes (full context)")
-    print("   ├── Level 2: Section nodes (subsections)")
-    print("   ├── Level 3: Paragraph nodes (detailed content)")
-    print("   └── Level 4: Sentence nodes (precise facts)")
-    print("   🔗 Parent-child relationships maintained throughout")
+    print(f"📝 Chunking Strategy: {default_chunking_service.strategy_name}")
+    print("   📄 Simple paragraph-based chunking")
+    print("   🔗 Neighboring paragraph context")
+    print("   📊 Clean storage with minimal complexity")
     
     # Check if embedding model loads successfully
     try:
         print(f"🤖 Embedding Model: {default_embedding_service.model_name}")
         print(f"🔢 Embedding Dimension: {default_embedding_service.embedding_model.embedding_dim}")
-        print("🧭 Navigation Features: context expansion, drill-down, sibling traversal")
-        print("🔍 Search Modes: adaptive, level-specific filtering")
-        print("✅ Hierarchical tree embeddings ready!")
+        print("🔍 Search Features: semantic similarity + context expansion")
+        print("✅ Paragraph-based embeddings ready!")
     except Exception as e:
         print(f"⚠️  Warning: Embedding service not available: {str(e)}")
         print("📦 Install with: pip install sentence-transformers faiss-cpu")
     
-    print("\n🎯 New in v8.0 - True Hierarchical Architecture:")
-    print("   • Single tree structure with parent-child relationships")
-    print("   • Tree navigation (ancestors, descendants, siblings)")
-    print("   • Context-aware search with automatic expansion") 
-    print("   • Single FAISS index with tree metadata")
-    print("   • 75% storage reduction vs parallel levels")
-    print("   • Real document structure following")
-    print("   • Chunk relationship traversal")
+    print("\n🎯 New in v9.0 - Simplified Architecture:")
+    print("   • Removed artificial hierarchy (60% less code)")
+    print("   • Simple paragraph chunking with context expansion")
+    print("   • Clean data storage (JSON lists, not trees)")
+    print("   • Same search quality with less complexity")
+    print("   • Neighboring paragraph context strategy")
+    print("   • Chapter and page filtering")
     
-    print("\n📡 API Endpoints:")
-    print("   • GET /documents/{doc_id}/tree-stats - Tree structure analytics")
-    print("   • GET /documents/{doc_id}/navigate/{chapter}/{chunk_id} - Tree navigation")
-    print("   • GET /search/{doc_id}/navigate/{chunk_id} - Search result navigation")
-    print("   • GET /search/{doc_id}?expand_context=true - Context-aware search")
-    
-    print("\n🔧 Configuration:")
-    print("   • Only TrueHierarchicalChunker supported (no strategy switching)")
-    print("   • Hierarchical embeddings with tree navigation")
-    print("   • Adaptive search with query classification")
-    print("   • Tree-based storage and retrieval")
+    print("\n📡 Key API Endpoints:")
+    print("   • GET /search/{doc_id} - Semantic search with context")
+    print("   • GET /search/{doc_id}/context/{chunk_id} - Get chunk context")
+    print("   • GET /documents/{doc_id}/chunks - Browse all paragraphs")
+    print("   • POST /confirm-toc - Process with paragraph chunking")
     
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)

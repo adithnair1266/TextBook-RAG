@@ -1,57 +1,50 @@
 """Pydantic models for the RAG system"""
 
-# Document models
-# Chapter models
-from .chapter import (ChapterContent, ChapterContentResponse, ChunkComparison,
-                      ChunkingComparisonResponse, ChunkingResult,
-                      ChunkListResponse, ChunkMetadata, ChunkQuery,
-                      ChunkSearchResult, TextChunk)
+# Simple chunk models (NEW)
+# Document models (EXISTING - keeping for TOC parsing)
 from .document import (ChapterSummary, ConfirmedTOC, ConfirmTOCResponse,
                        DocumentChaptersResponse, DocumentListResponse,
                        DocumentMetadata, DocumentStats, DocumentUpload,
                        ErrorResponse, MappedChapter, PageRange, ParsedTOC,
                        ParseTOCResponse, Subsection, TOCChapter,
                        TOCConfirmation, ValidationError)
+from .simple_chunk import (ContextExpandedResult, SimpleChunk, SimpleChunkList,
+                           SimpleChunkListResponse, SimpleChunkResponse)
 
 __all__ = [
-    # Core data structures
+    # Simple chunk models (NEW)
+    "SimpleChunk",
+    "SimpleChunkList", 
+    "SimpleChunkResponse",
+    "SimpleChunkListResponse",
+    "ContextExpandedResult",
+    
+    # Core data structures (EXISTING)
     "PageRange",
-    "Subsection",
+    "Subsection", 
     "TOCChapter",
     "MappedChapter",
     
-    # TOC processing
+    # TOC processing (EXISTING)
     "ParsedTOC",
-    "ConfirmedTOC",
+    "ConfirmedTOC", 
     "DocumentUpload",
     "TOCConfirmation",
     
-    # Document metadata
+    # Document metadata (EXISTING)
     "ChapterSummary",
-    "DocumentMetadata", 
+    "DocumentMetadata",
     "DocumentStats",
     
-    # Chunk structures
-    "ChunkMetadata",
-    "TextChunk",
-    "ChapterContent",
-    "ChunkingResult",
-    
-    # Query and search
-    "ChunkQuery",
-    "ChunkSearchResult",
-    "ChunkComparison",
-    
-    # API responses
+    # API responses (EXISTING + NEW)
     "ParseTOCResponse",
-    "ConfirmTOCResponse",
+    "ConfirmTOCResponse", 
     "DocumentListResponse",
     "DocumentChaptersResponse",
-    "ChapterContentResponse",
-    "ChunkListResponse",
-    "ChunkingComparisonResponse",
+    "SimpleChunkResponse",
+    "SimpleChunkListResponse",
     
-    # Error handling
+    # Error handling (EXISTING)
     "ErrorResponse",
     "ValidationError"
 ]

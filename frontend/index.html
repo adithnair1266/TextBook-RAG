@@ -1,9 +1,11 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Hierarchical RAG Document Search</title>
+    <title>RAG Document Search - Simple & Effective</title>
     <style>
-        body { font-family: Arial, sans-serif; max-width: 1000px; margin: 0 auto; padding: 20px; }
+        body { font-family: Arial, sans-serif; max-width: 1400px; margin: 0 auto; padding: 20px; }
+        .main-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .full-width { grid-column: 1 / -1; }
         .section { border: 1px solid #ddd; padding: 20px; margin: 20px 0; border-radius: 5px; }
         input, select, textarea, button { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 4px; }
         button { background: #007bff; color: white; border: none; cursor: pointer; }
@@ -15,95 +17,169 @@
         th { background: #f2f2f2; }
         .result { border-left: 3px solid #007bff; padding: 15px; margin: 10px 0; background: #f8f9fa; }
         .context { background: #fff3cd; padding: 10px; margin: 5px 0; border-radius: 3px; font-size: 14px; }
-        .path { color: #666; font-size: 12px; margin-bottom: 5px; }
-        .level { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 11px; margin-right: 5px; }
-        .level-1 { background: #d4edda; }
-        .level-2 { background: #d1ecf1; }
-        .level-3 { background: #f8d7da; }
-        .level-4 { background: #e2e3e5; }
+        .chunk-info { color: #666; font-size: 12px; margin-bottom: 5px; }
+        .score { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 11px; margin-right: 5px; background: #e2e3e5; }
         .alert { padding: 10px; margin: 10px 0; border-radius: 4px; }
         .alert-success { background: #d4edda; color: #155724; }
         .alert-error { background: #f8d7da; color: #721c24; }
-        .search-options { display: flex; gap: 10px; align-items: center; margin: 10px 0; }
+        .search-options { display: flex; gap: 10px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
         .search-options > * { width: auto; margin: 0; }
+        .context-chunks { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 3px; padding: 10px; margin: 5px 0; }
+        .target-chunk { background: #fff3cd; border-left: 3px solid #ffc107; padding: 10px; margin: 5px 0; }
+        .paragraph-index { font-weight: bold; color: #495057; }
+        .answer-section { background: #e8f5e8; border: 1px solid #4caf50; padding: 15px; margin: 10px 0; border-radius: 5px; }
+        .answer-text { font-size: 16px; line-height: 1.6; margin-bottom: 15px; }
+        .answer-text h2 { color: #2c5230; margin: 15px 0 10px 0; font-size: 20px; }
+        .answer-text h3 { color: #2c5230; margin: 12px 0 8px 0; font-size: 18px; }
+        .answer-text h4 { color: #2c5230; margin: 10px 0 6px 0; font-size: 16px; }
+        .answer-text ul { margin: 10px 0; padding-left: 20px; }
+        .answer-text li { margin: 5px 0; }
+        .answer-text p { margin: 8px 0; }
+        .answer-text strong { color: #1a3d1f; }
+        .citations-list { background: #f8f9fa; padding: 10px; border-radius: 3px; margin: 10px 0; }
+        .citation-item { display: inline-block; background: #007bff; color: white; padding: 3px 8px; margin: 2px; border-radius: 3px; font-size: 12px; }
+        .answer-meta { color: #666; font-size: 12px; margin-top: 10px; }
+        .error-answer { background: #f8d7da; border: 1px solid #dc3545; color: #721c24; }
+        .success-answer { background: #d4edda; border: 1px solid #28a745; color: #155724; }
+        
+        @media (max-width: 1024px) {
+            .main-grid { grid-template-columns: 1fr; }
+            body { max-width: 800px; }
+        }
     </style>
 </head>
 <body>
-    <h1>Hierarchical RAG Document Search</h1>
-    <p><strong>v8.0</strong> - True tree navigation with parent-child relationships</p>
+    <h1>RAG Document Search</h1>
+    <p><strong>v9.0</strong> - Simple paragraph chunking with AI question answering</p>
 
     <div id="alerts"></div>
 
-    <!-- Upload Section -->
-    <div class="section">
-        <h2>Upload Document</h2>
-        
-        <!-- Step 1: Parse TOC -->
-        <div id="step1">
-            <input type="file" id="fileInput" accept=".pdf">
-            <input type="text" id="tocPages" placeholder="TOC pages (e.g., 9-22)" value="9-22">
-            <button id="parseBtn" disabled>Parse TOC</button>
-            <div id="parseLoading" class="hidden">Parsing...</div>
-        </div>
-
-        <!-- Step 2: Review Chapters -->
-        <div id="step2" class="hidden">
-            <h3>Review Chapters</h3>
-            <table>
-                <tr><th>Title</th><th>Page</th><th>Action</th></tr>
-                <tbody id="chaptersTable"></tbody>
-            </table>
-            <button id="addChapter">Add Chapter</button>
-            <input type="number" id="contentStarts" placeholder="Content starts at page" value="33">
-            <button id="confirmBtn">Process Document</button>
-            <button id="backBtn">Back</button>
-        </div>
-
-        <!-- Step 3: Processing -->
-        <div id="step3" class="hidden">
-            <div id="processing">Building hierarchical trees...</div>
-            <div id="results" class="hidden"></div>
-        </div>
-    </div>
-
-    <!-- Documents Section -->
-    <div class="section">
-        <h2>Documents</h2>
-        <button id="refreshBtn">Refresh</button>
-        <div id="docsList"></div>
-    </div>
-
-    <!-- Search Section -->
-    <div class="section">
-        <h2>Hierarchical Search</h2>
-        <select id="docSelect"><option value="">Select document...</option></select>
-        
-        <div class="search-options">
-            <label>Mode:</label>
-            <select id="searchMode" style="width: 120px;">
-                <option value="adaptive">Adaptive</option>
-                <option value="level_1">Level 1 (Chapters)</option>
-                <option value="level_2">Level 2 (Sections)</option>
-                <option value="level_3">Level 3 (Paragraphs)</option>
-                <option value="level_4">Level 4 (Sentences)</option>
-            </select>
+    <div class="main-grid">
+        <!-- Upload Section - Full Width -->
+        <div class="section full-width">
+            <h2>Upload Document</h2>
             
-            <label>Context:</label>
-            <input type="checkbox" id="expandContext" checked style="width: auto;">
-            
-            <label>Levels:</label>
-            <input type="number" id="contextLevels" value="1" min="0" max="3" style="width: 60px;">
+            <!-- Step 1: Parse TOC -->
+            <div id="step1">
+                <input type="file" id="fileInput" accept=".pdf">
+                <input type="text" id="tocPages" placeholder="TOC pages (e.g., 9-22)" value="9-22">
+                <button id="parseBtn" disabled>Parse TOC</button>
+                <div id="parseLoading" class="hidden">Parsing...</div>
+            </div>
+
+            <!-- Step 2: Review Chapters -->
+            <div id="step2" class="hidden">
+                <h3>Review Chapters</h3>
+                <table>
+                    <tr><th>Title</th><th>Page</th><th>Action</th></tr>
+                    <tbody id="chaptersTable"></tbody>
+                </table>
+                <button id="addChapter">Add Chapter</button>
+                <input type="number" id="contentStarts" placeholder="Content starts at page" value="33">
+                <button id="confirmBtn">Process Document</button>
+                <button id="backBtn">Back</button>
+            </div>
+
+            <!-- Step 3: Processing -->
+            <div id="step3" class="hidden">
+                <div id="processing">Processing with paragraph chunking...</div>
+                <div id="results" class="hidden"></div>
+            </div>
         </div>
-        
-        <textarea id="searchQuery" placeholder="Ask a question..." rows="3" disabled></textarea>
-        <button id="searchBtn" disabled>Search</button>
-        <div id="searchResults"></div>
+
+        <!-- Documents Section - Left Column -->
+        <div class="section">
+            <h2>Documents</h2>
+            <button id="refreshBtn">Refresh</button>
+            <div id="docsList"></div>
+        </div>
+
+        <!-- Question Answering Section - Right Column -->
+        <div class="section">
+            <h2>Ask Questions (AI Answers)</h2>
+            <select id="askDocSelect"><option value="">Select document...</option></select>
+            
+            <div class="search-options">
+                <label>Max Chunks:</label>
+                <input type="number" id="maxChunks" value="2" min="1" max="5" style="width: 60px;">
+                
+                <label>Context:</label>
+                <select id="askContextStrategy" style="width: 120px;">
+                    <option value="paragraph">Paragraphs</option>
+                    <option value="page">Pages</option>
+                    <option value="mixed">Mixed</option>
+                </select>
+                
+                <label>Window:</label>
+                <input type="number" id="askContextWindow" value="2" min="0" max="5" style="width: 60px;">
+                
+                <label>Chapter:</label>
+                <select id="askChapterFilter" style="width: 150px;">
+                    <option value="">All chapters</option>
+                </select>
+            </div>
+            
+            <textarea id="askQuery" placeholder="Ask a question and get an AI-generated answer with citations..." rows="3" disabled></textarea>
+            <button id="askBtn" disabled>Ask Question</button>
+            <div id="askResults"></div>
+        </div>
+
+        <!-- Search Section - Left Column -->
+        <div class="section">
+            <h2>Semantic Search (Raw Results)</h2>
+            <select id="docSelect"><option value="">Select document...</option></select>
+            
+            <div class="search-options">
+                <label>Context:</label>
+                <select id="contextStrategy" style="width: 120px;">
+                    <option value="paragraph">Paragraphs</option>
+                    <option value="page">Pages</option>
+                    <option value="mixed">Mixed</option>
+                </select>
+                
+                <label>Window:</label>
+                <input type="number" id="contextWindow" value="2" min="0" max="5" style="width: 60px;">
+                
+                <label>Expand:</label>
+                <input type="checkbox" id="expandContext" checked style="width: auto;">
+                
+                <label>Chapter:</label>
+                <select id="chapterFilter" style="width: 150px;">
+                    <option value="">All chapters</option>
+                </select>
+            </div>
+            
+            <textarea id="searchQuery" placeholder="Search for relevant chunks..." rows="3" disabled></textarea>
+            <button id="searchBtn" disabled>Search Chunks</button>
+            <div id="searchResults"></div>
+        </div>
+
+        <!-- Browse Section - Right Column -->
+        <div class="section">
+            <h2>Browse Chunks</h2>
+            <select id="browseDocSelect"><option value="">Select document...</option></select>
+            
+            <div class="search-options">
+                <label>Chapter:</label>
+                <select id="browseChapterFilter" style="width: 200px;">
+                    <option value="">All chapters</option>
+                </select>
+                
+                <label>Page:</label>
+                <input type="number" id="browsePageFilter" placeholder="Page number" style="width: 100px;">
+                
+                <button id="browseBtn" disabled style="width: auto;">Browse Chunks</button>
+            </div>
+            
+            <div id="browseResults"></div>
+        </div>
     </div>
 
     <script>
         const API = 'http://localhost:8001';
         let docId = null;
         let docs = [];
+        let currentChapters = [];
 
         // Elements
         const fileInput = document.getElementById('fileInput');
@@ -120,12 +196,28 @@
         const refreshBtn = document.getElementById('refreshBtn');
         const docsList = document.getElementById('docsList');
         const docSelect = document.getElementById('docSelect');
-        const searchMode = document.getElementById('searchMode');
+        const contextStrategy = document.getElementById('contextStrategy');
+        const contextWindow = document.getElementById('contextWindow');
         const expandContext = document.getElementById('expandContext');
-        const contextLevels = document.getElementById('contextLevels');
+        const chapterFilter = document.getElementById('chapterFilter');
         const searchQuery = document.getElementById('searchQuery');
         const searchBtn = document.getElementById('searchBtn');
         const searchResults = document.getElementById('searchResults');
+        const browseDocSelect = document.getElementById('browseDocSelect');
+        const browseChapterFilter = document.getElementById('browseChapterFilter');
+        const browsePageFilter = document.getElementById('browsePageFilter');
+        const browseBtn = document.getElementById('browseBtn');
+        const browseResults = document.getElementById('browseResults');
+        
+        // Question answering elements
+        const askDocSelect = document.getElementById('askDocSelect');
+        const maxChunks = document.getElementById('maxChunks');
+        const askContextStrategy = document.getElementById('askContextStrategy');
+        const askContextWindow = document.getElementById('askContextWindow');
+        const askChapterFilter = document.getElementById('askChapterFilter');
+        const askQuery = document.getElementById('askQuery');
+        const askBtn = document.getElementById('askBtn');
+        const askResults = document.getElementById('askResults');
 
         // Initialize
         loadDocs();
@@ -152,10 +244,10 @@
                 docId = data.doc_id;
                 showChapters(data.parsed_toc.chapters);
                 showStep(2);
-                alert('TOC parsed successfully!');
+                showAlert('TOC parsed successfully!', 'success');
 
             } catch (e) {
-                alert('Error: ' + e.message);
+                showAlert('Error: ' + e.message, 'error');
                 parseBtn.disabled = false;
             } finally {
                 parseLoading.classList.add('hidden');
@@ -188,7 +280,7 @@
             }
 
             if (!chapters.length) {
-                alert('Add at least one chapter');
+                showAlert('Add at least one chapter', 'error');
                 return;
             }
 
@@ -209,14 +301,14 @@
                 results.classList.remove('hidden');
                 results.innerHTML = `
                     <div class="alert alert-success">
-                        Success! Built hierarchical trees: ${data.chapters_count} chapters with ${data.total_chunk_count} tree nodes
+                        Success! Processed ${data.chapters_count} chapters into ${data.total_chunk_count} paragraphs
                     </div>
                     <button onclick="reset()">Process Another</button>
                 `;
                 loadDocs();
 
             } catch (e) {
-                alert('Error: ' + e.message);
+                showAlert('Error: ' + e.message, 'error');
                 confirmBtn.disabled = false;
                 showStep(2);
             }
@@ -250,51 +342,142 @@
                 docsList.innerHTML = docs.map(d => `
                     <div style="border:1px solid #ddd; padding:10px; margin:10px 0;">
                         <b>${d.filename || 'Document'}</b><br>
-                        ${d.chapters_count} chapters, ${d.total_chunk_count} tree nodes
+                        ${d.chapters_count} chapters, ${d.total_chunk_count} paragraphs
                         ${d.has_embeddings !== false ? ' ✅' : ' ❌'}
-                        ${d.is_hierarchical ? ' 🌳' : ''}
-                        <br><button onclick="selectDoc('${d.doc_id}')" class="small-btn">Select</button>
-                        <button onclick="showTreeStats('${d.doc_id}')" class="small-btn">Tree Stats</button>
+                        (${d.architecture || 'paragraph_based'})
+                        <br><button onclick="selectDoc('${d.doc_id}')" class="small-btn">Raw Search</button>
+                        <button onclick="selectAskDoc('${d.doc_id}')" class="small-btn">Ask Questions</button>
+                        <button onclick="selectBrowseDoc('${d.doc_id}')" class="small-btn">Browse Chunks</button>
                     </div>
                 `).join('');
 
-                docSelect.innerHTML = '<option value="">Select document...</option>' +
+                // Update document selectors
+                const docOptions = '<option value="">Select document...</option>' +
                     docs.filter(d => d.has_embeddings !== false)
                         .map(d => `<option value="${d.doc_id}">${d.filename || 'Document'}</option>`)
                         .join('');
+
+                docSelect.innerHTML = docOptions;
+                askDocSelect.innerHTML = docOptions;
+                browseDocSelect.innerHTML = '<option value="">Select document...</option>' +
+                    docs.map(d => `<option value="${d.doc_id}">${d.filename || 'Document'}</option>`)
+                        .join('');
+
             } catch (e) {
                 docsList.innerHTML = 'Error loading documents';
             }
         }
 
-        async function showTreeStats(docId) {
+        refreshBtn.onclick = loadDocs;
+
+        // Question Answering
+        function selectAskDoc(id) {
+            askDocSelect.value = id;
+            handleAskDocSelect();
+        }
+
+        askDocSelect.onchange = handleAskDocSelect;
+
+        async function handleAskDocSelect() {
+            const id = askDocSelect.value;
+            if (!id) {
+                askQuery.disabled = true;
+                askBtn.disabled = true;
+                askChapterFilter.innerHTML = '<option value="">All chapters</option>';
+                return;
+            }
+
             try {
-                const res = await fetch(`${API}/documents/${docId}/tree-stats`);
+                const res = await fetch(`${API}/documents/${id}/chapters`);
                 const data = await res.json();
                 
-                let statsHtml = `<h4>Tree Statistics for Document</h4>`;
-                if (data.tree_structure) {
-                    statsHtml += `<p>Max Depth: ${data.tree_structure.max_depth} levels</p>`;
-                    statsHtml += `<p>Total Nodes: ${data.total_chunks}</p>`;
-                    
-                    if (data.level_details) {
-                        statsHtml += `<p>Level Breakdown:</p><ul>`;
-                        for (const [level, stats] of Object.entries(data.level_details)) {
-                            statsHtml += `<li>${level}: ${stats.chunk_count} nodes (avg ${stats.avg_word_count.toFixed(0)} words)</li>`;
-                        }
-                        statsHtml += `</ul>`;
-                    }
-                }
-                
-                alert(statsHtml);
+                askChapterFilter.innerHTML = '<option value="">All chapters</option>' +
+                    (data.chapters || []).map(ch => `<option value="${ch.title}">${ch.title}</option>`).join('');
+
+                askQuery.disabled = false;
+                askBtn.disabled = false;
             } catch (e) {
-                alert('Error loading tree stats: ' + e.message);
+                showAlert('Error loading document for questions', 'error');
             }
         }
 
-        refreshBtn.onclick = loadDocs;
+        askBtn.onclick = async () => {
+            const query = askQuery.value.trim();
+            const id = askDocSelect.value;
+            
+            if (!query || !id) return;
 
-        // Search
+            askBtn.disabled = true;
+            askResults.innerHTML = 'Generating answer...';
+
+            try {
+                const requestBody = {
+                    query: query,
+                    max_chunks: parseInt(maxChunks.value),
+                    search_params: {
+                        k: 5,
+                        expand_context: true,
+                        context_strategy: askContextStrategy.value,
+                        context_window: parseInt(askContextWindow.value)
+                    }
+                };
+
+                if (askChapterFilter.value) {
+                    requestBody.search_params.chapter_filter = askChapterFilter.value;
+                }
+
+                const res = await fetch(`${API}/ask/${id}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody)
+                });
+
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail);
+
+                if (data.success) {
+                    askResults.innerHTML = `
+                        <div class="answer-section success-answer">
+                            <div class="answer-text">${formatAnswerText(data.answer)}</div>
+                            
+                            ${data.citations.length > 0 ? `
+                                <div class="citations-list">
+                                    <strong>Sources:</strong><br>
+                                    ${data.citations.map(citation => 
+                                        `<span class="citation-item">${citation.citation_text}</span>`
+                                    ).join('')}
+                                </div>
+                            ` : ''}
+                            
+                            <div class="answer-meta">
+                                Generated using ${data.chunks_used} chunks (${data.total_context_words} words) 
+                                in ${data.generation_time ? (data.generation_time * 1000).toFixed(0) + 'ms' : 'unknown time'}
+                                | Strategy: ${data.search_strategy}
+                                ${data.context_expansion ? ' with context expansion' : ''}
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    askResults.innerHTML = `
+                        <div class="answer-section error-answer">
+                            <div class="answer-text">${formatAnswerText(data.answer)}</div>
+                            ${data.error_message ? `<div class="answer-meta">Error: ${data.error_message}</div>` : ''}
+                        </div>
+                    `;
+                }
+
+            } catch (e) {
+                askResults.innerHTML = `
+                    <div class="answer-section error-answer">
+                        <div class="answer-text">Error: ${e.message}</div>
+                    </div>
+                `;
+            } finally {
+                askBtn.disabled = false;
+            }
+        };
+
+        // Search functionality
         function selectDoc(id) {
             docSelect.value = id;
             handleDocSelect();
@@ -307,14 +490,22 @@
             if (!id) {
                 searchQuery.disabled = true;
                 searchBtn.disabled = true;
+                chapterFilter.innerHTML = '<option value="">All chapters</option>';
                 return;
             }
 
             try {
+                const res = await fetch(`${API}/documents/${id}/chapters`);
+                const data = await res.json();
+                currentChapters = data.chapters || [];
+                
+                chapterFilter.innerHTML = '<option value="">All chapters</option>' +
+                    currentChapters.map(ch => `<option value="${ch.title}">${ch.title}</option>`).join('');
+
                 searchQuery.disabled = false;
                 searchBtn.disabled = false;
             } catch (e) {
-                alert('Error loading document');
+                showAlert('Error loading document', 'error');
             }
         }
 
@@ -325,16 +516,20 @@
             if (!query || !id) return;
 
             searchBtn.disabled = true;
-            searchResults.innerHTML = 'Searching hierarchical tree...';
+            searchResults.innerHTML = 'Searching...';
 
             try {
                 const params = new URLSearchParams({
                     query: query,
                     k: 5,
-                    search_mode: searchMode.value,
                     expand_context: expandContext.checked,
-                    context_levels: contextLevels.value
+                    context_strategy: contextStrategy.value,
+                    context_window: contextWindow.value
                 });
+
+                if (chapterFilter.value) {
+                    params.append('chapter_filter', chapterFilter.value);
+                }
 
                 const res = await fetch(`${API}/search/${id}?${params}`);
                 const data = await res.json();
@@ -343,65 +538,60 @@
                 let results = data.results || [];
 
                 if (!results.length) {
-                    searchResults.innerHTML = 'No results found in hierarchical tree';
+                    searchResults.innerHTML = 'No results found';
                     return;
                 }
 
                 searchResults.innerHTML = `
                     <div style="margin-bottom: 15px;">
-                        <strong>Search Mode:</strong> ${data.search_mode} | 
-                        <strong>Results:</strong> ${results.length} | 
-                        <strong>Context:</strong> ${data.expand_context ? 'Enabled' : 'Disabled'}
+                        <strong>Raw Search Results:</strong> ${results.length} chunks | 
+                        <strong>Context:</strong> ${data.expand_context ? data.context_strategy + ' (window: ' + data.context_window + ')' : 'None'}
+                        ${data.chapter_filter ? ' | <strong>Chapter:</strong> ' + data.chapter_filter : ''}
                     </div>
-                ` + results.map(r => {
-                    const level = r.level || 3;
-                    const levelNames = {1: 'Chapter', 2: 'Section', 3: 'Paragraph', 4: 'Sentence'};
-                    const score = ((r.similarity_score || 0) * 100).toFixed(1);
-                    
+                ` + results.map((r, idx) => {
                     let html = `<div class="result">`;
                     
-                    // Navigation path
-                    if (r.navigation_path) {
-                        html += `<div class="path">📍 ${r.navigation_path}</div>`;
-                    }
-                    
-                    // Level and similarity
-                    html += `<span class="level level-${level}">${levelNames[level] || `Level ${level}`}</span>`;
-                    html += `<strong>${score}% match</strong><br>`;
-                    
-                    // Main content - try multiple field names for hierarchical API compatibility
-                    const content = r.text || r.chunk_text || r.content || 
-                                  (r.target_chunk && r.target_chunk.text) ||
-                                  (r.chunk && r.chunk.text) ||
-                                  'Content not available';
-                    
-                    if (content && content !== 'Content not available') {
-                        html += `<div style="margin: 10px 0; background: white; padding: 10px; border-radius: 3px;">`;
-                        html += `${content.substring(0, 800)}${content.length > 800 ? '...' : ''}`;
+                    if (r.target_chunk) {
+                        const target = r.target_chunk;
+                        const score = ((r.similarity_score || 0) * 100).toFixed(1);
+                        
+                        html += `<div class="chunk-info">`;
+                        html += `<span class="score">${score}% match</span>`;
+                        html += `<span class="paragraph-index">Paragraph ${target.paragraph_index + 1}</span> in ${target.chapter_name} (Page ${target.page_number})`;
                         html += `</div>`;
-                    }
-                    
-                    // Enhanced context if available
-                    if (r.enriched_context && r.enriched_context !== content) {
-                        html += `<div class="context"><strong>Enhanced Context:</strong> ${r.enriched_context.substring(0, 300)}${r.enriched_context.length > 300 ? '...' : ''}</div>`;
-                    }
-                    
-                    // Ancestors if available
-                    if (r.ancestors && r.ancestors.length > 0) {
-                        html += `<div class="context"><strong>Parent Context:</strong> `;
-                        r.ancestors.forEach(ancestor => {
-                            const ancestorLevel = ancestor.level || 1;
-                            const ancestorTitle = ancestor.title || ancestor.text?.substring(0, 50) || 'Unknown';
-                            html += `<span class="level level-${ancestorLevel}">${ancestorTitle}</span> `;
-                        });
+                        
+                        html += `<div class="target-chunk">`;
+                        html += `<strong>Target:</strong> ${target.text.substring(0, 500)}${target.text.length > 500 ? '...' : ''}`;
                         html += `</div>`;
-                    }
-                    
-                    // Add debug info for development (remove in production)
-                    if (content === 'Content not available') {
-                        html += `<div style="font-size: 11px; color: #666; margin-top: 10px;">`;
-                        html += `Debug: Available fields: ${Object.keys(r).join(', ')}`;
+                        
+                        if (r.context_chunks && r.context_chunks.length > 1) {
+                            const contextChunks = r.context_chunks.filter(c => c.chunk_id !== target.chunk_id);
+                            if (contextChunks.length > 0) {
+                                html += `<div class="context-chunks">`;
+                                html += `<strong>Context (${contextChunks.length} neighboring paragraphs):</strong><br>`;
+                                contextChunks.forEach(chunk => {
+                                    html += `<div style="margin: 5px 0; padding: 5px; background: white; border-radius: 3px;">`;
+                                    html += `<small>Para ${chunk.paragraph_index + 1}:</small> ${chunk.text.substring(0, 200)}${chunk.text.length > 200 ? '...' : ''}`;
+                                    html += `</div>`;
+                                });
+                                html += `</div>`;
+                            }
+                        }
+                        
+                        if (r.context_text && r.context_text !== target.text) {
+                            html += `<button onclick="toggleContext(${idx})" class="small-btn">Toggle Full Context</button>`;
+                            html += `<div id="context_${idx}" class="context" style="display: none;">`;
+                            html += `<strong>Full Context:</strong><br>${r.context_text.substring(0, 1000)}${r.context_text.length > 1000 ? '...' : ''}`;
+                            html += `</div>`;
+                        }
+                        
+                    } else {
+                        const score = ((r.similarity_score || 0) * 100).toFixed(1);
+                        html += `<div class="chunk-info">`;
+                        html += `<span class="score">${score}% match</span>`;
+                        html += `${r.chapter_name} (Page ${r.page_number})`;
                         html += `</div>`;
+                        html += `<div>${r.text.substring(0, 800)}${r.text.length > 800 ? '...' : ''}</div>`;
                     }
                     
                     html += `</div>`;
@@ -415,12 +605,149 @@
             }
         };
 
-        function alert(msg) {
+        function toggleContext(idx) {
+            const contextDiv = document.getElementById(`context_${idx}`);
+            contextDiv.style.display = contextDiv.style.display === 'none' ? 'block' : 'none';
+        }
+
+        // Browse functionality
+        function selectBrowseDoc(id) {
+            browseDocSelect.value = id;
+            handleBrowseDocSelect();
+        }
+
+        browseDocSelect.onchange = handleBrowseDocSelect;
+
+        async function handleBrowseDocSelect() {
+            const id = browseDocSelect.value;
+            if (!id) {
+                browseBtn.disabled = true;
+                browseChapterFilter.innerHTML = '<option value="">All chapters</option>';
+                return;
+            }
+
+            try {
+                const res = await fetch(`${API}/documents/${id}/chapters`);
+                const data = await res.json();
+                
+                browseChapterFilter.innerHTML = '<option value="">All chapters</option>' +
+                    (data.chapters || []).map(ch => `<option value="${ch.title}">${ch.title}</option>`).join('');
+
+                browseBtn.disabled = false;
+            } catch (e) {
+                showAlert('Error loading document for browsing', 'error');
+            }
+        }
+
+        browseBtn.onclick = async () => {
+            const id = browseDocSelect.value;
+            if (!id) return;
+
+            browseBtn.disabled = true;
+            browseResults.innerHTML = 'Loading chunks...';
+
+            try {
+                const params = new URLSearchParams();
+                if (browseChapterFilter.value) {
+                    params.append('chapter_filter', browseChapterFilter.value);
+                }
+                if (browsePageFilter.value) {
+                    params.append('page_filter', browsePageFilter.value);
+                }
+
+                const res = await fetch(`${API}/documents/${id}/chunks?${params}`);
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail);
+
+                const chunks = data.chunks || [];
+
+                if (!chunks.length) {
+                    browseResults.innerHTML = 'No chunks found with current filters';
+                    return;
+                }
+
+                browseResults.innerHTML = `
+                    <div style="margin-bottom: 15px;">
+                        <strong>Found:</strong> ${chunks.length} paragraphs
+                        ${data.chapter_filter ? ' | <strong>Chapter:</strong> ' + data.chapter_filter : ''}
+                        ${data.page_filter ? ' | <strong>Page:</strong> ' + data.page_filter : ''}
+                    </div>
+                ` + chunks.map(chunk => `
+                    <div class="result">
+                        <div class="chunk-info">
+                            <span class="paragraph-index">Paragraph ${chunk.paragraph_index + 1}</span> 
+                            in ${chunk.chapter_name} (Page ${chunk.page_number}) - ${chunk.word_count} words
+                        </div>
+                        <div>${chunk.text.substring(0, 600)}${chunk.text.length > 600 ? '...' : ''}</div>
+                        <button onclick="getChunkContext('${id}', '${chunk.chunk_id}')" class="small-btn">Show Context</button>
+                    </div>
+                `).join('');
+
+            } catch (e) {
+                browseResults.innerHTML = 'Browse error: ' + e.message;
+            } finally {
+                browseBtn.disabled = false;
+            }
+        };
+
+        async function getChunkContext(docId, chunkId) {
+            try {
+                const res = await fetch(`${API}/search/${docId}/context/${chunkId}?strategy=paragraph&window=2`);
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail);
+
+                const context = data.context;
+                if (context.target_chunk) {
+                    alert(`Context for paragraph ${context.target_chunk.paragraph_index + 1}:\n\n${context.context_text.substring(0, 500)}...`);
+                } else {
+                    alert('Context not available');
+                }
+            } catch (e) {
+                alert('Error getting context: ' + e.message);
+            }
+        }
+
+        function formatAnswerText(text) {
+            // Convert common text formatting to HTML
+            let formatted = text
+                // Headers (lines starting with ##, ###, etc.)
+                .replace(/^### (.+)$/gm, '<h4>$1</h4>')
+                .replace(/^## (.+)$/gm, '<h3>$1</h3>')
+                .replace(/^# (.+)$/gm, '<h2>$1</h2>')
+                
+                // Bold text
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\b([A-Z][A-Za-z\s]+:)\b/g, '<strong>$1</strong>') // "Key Points:" style
+                
+                // Bullet points (lines starting with -, *, or •)
+                .replace(/^[\s]*[-\*•]\s+(.+)$/gm, '<li>$1</li>')
+                
+                // Numbered lists (lines starting with 1., 2., etc.)
+                .replace(/^[\s]*(\d+\.)\s+(.+)$/gm, '<li>$2</li>')
+                
+                // Line breaks
+                .replace(/\n\n/g, '</p><p>')
+                .replace(/\n/g, '<br>');
+            
+            // Wrap bullet points in <ul> tags
+            formatted = formatted.replace(/(<li>.*<\/li>)/gs, (match) => {
+                const items = match.split('</li>').filter(item => item.includes('<li>')).map(item => item + '</li>');
+                return '<ul>' + items.join('') + '</ul>';
+            });
+            
+            // Wrap in paragraphs
+            if (!formatted.startsWith('<h') && !formatted.startsWith('<ul>')) {
+                formatted = '<p>' + formatted + '</p>';
+            }
+            
+            return formatted;
+        }
+
+        function showAlert(msg, type) {
             const alerts = document.getElementById('alerts');
-            const type = msg.includes('Error') ? 'error' : 'success';
             alerts.innerHTML = `<div class="alert alert-${type}">${msg}</div>`;
             setTimeout(() => alerts.innerHTML = '', 5000);
         }
     </script>
 </body>
-</html>
+</html
