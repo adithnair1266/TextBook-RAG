@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Hierarchical RAG Document Search</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 1000px; margin: 0 auto; padding: 20px; }
+        .section { border: 1px solid #ddd; padding: 20px; margin: 20px 0; border-radius: 5px; }
+        input, select, textarea, button { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ddd; border-radius: 4px; }
+        button { background: #007bff; color: white; border: none; cursor: pointer; }
+        button:disabled { background: #ccc; }
+        .small-btn { width: auto; padding: 5px 10px; margin: 5px; font-size: 12px; }
+        .hidden { display: none; }
+        table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background: #f2f2f2; }
+        .result { border-left: 3px solid #007bff; padding: 15px; margin: 10px 0; background: #f8f9fa; }
+        .context { background: #fff3cd; padding: 10px; margin: 5px 0; border-radius: 3px; font-size: 14px; }
+        .path { color: #666; font-size: 12px; margin-bottom: 5px; }
+        .level { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 11px; margin-right: 5px; }
+        .level-1 { background: #d4edda; }
+        .level-2 { background: #d1ecf1; }
+        .level-3 { background: #f8d7da; }
+        .level-4 { background: #e2e3e5; }
+        .alert { padding: 10px; margin: 10px 0; border-radius: 4px; }
+        .alert-success { background: #d4edda; color: #155724; }
+        .alert-error { background: #f8d7da; color: #721c24; }
+        .search-options { display: flex; gap: 10px; align-items: center; margin: 10px 0; }
+        .search-options > * { width: auto; margin: 0; }
+    </style>
+</head>
+<body>
+    <h1>Hierarchical RAG Document Search</h1>
+    <p><strong>v8.0</strong> - True tree navigation with parent-child relationships</p>
+
+    <div id="alerts"></div>
+
+    <!-- Upload Section -->
+    <div class="section">
+        <h2>Upload Document</h2>
+        
+        <!-- Step 1: Parse TOC -->
+        <div id="step1">
+            <input type="file" id="fileInput" accept=".pdf">
+            <input type="text" id="tocPages" placeholder="TOC pages (e.g., 9-22)" value="9-22">
+            <button id="parseBtn" disabled>Parse TOC</button>
+            <div id="parseLoading" class="hidden">Parsing...</div>
+        </div>
+
+        <!-- Step 2: Review Chapters -->
+        <div id="step2" class="hidden">
+            <h3>Review Chapters</h3>
+            <table>
+                <tr><th>Title</th><th>Page</th><th>Action</th></tr>
+                <tbody id="chaptersTable"></tbody>
+            </table>
+            <button id="addChapter">Add Chapter</button>
+            <input type="number" id="contentStarts" placeholder="Content starts at page" value="33">
+            <button id="confirmBtn">Process Document</button>
+            <button id="backBtn">Back</button>
+        </div>
+
+        <!-- Step 3: Processing -->
+        <div id="step3" class="hidden">
+            <div id="processing">Building hierarchical trees...</div>
+            <div id="results" class="hidden"></div>
+        </div>
+    </div>
+
+    <!-- Documents Section -->
+    <div class="section">
+        <h2>Documents</h2>
+        <button id="refreshBtn">Refresh</button>
+        <div id="docsList"></div>
+    </div>
+
+    <!-- Search Section -->
+    <div class="section">
+        <h2>Hierarchical Search</h2>
+        <select id="docSelect"><option value="">Select document...</option></select>
+        
+        <div class="search-options">
+            <label>Mode:</label>
+            <select id="searchMode" style="width: 120px;">
+                <option value="adaptive">Adaptive</option>
+                <option value="level_1">Level 1 (Chapters)</option>
+                <option value="level_2">Level 2 (Sections)</option>
+                <option value="level_3">Level 3 (Paragraphs)</option>
+                <option value="level_4">Level 4 (Sentences)</option>
+            </select>
+            
+            <label>Context:</label>
+            <input type="checkbox" id="expandContext" checked style="width: auto;">
+            
+            <label>Levels:</label>
+            <input type="number" id="contextLevels" value="1" min="0" max="3" style="width: 60px;">
+        </div>
+        
+        <textarea id="searchQuery" placeholder="Ask a question..." rows="3" disabled></textarea>
+        <button id="searchBtn" disabled>Search</button>
+        <div id="searchResults"></div>
+    </div>
+
+    <script>
+        const API = 'http://localhost:8001';
+        let docId = null;
+        let docs = [];
+
+        // Elements
+        const fileInput = document.getElementById('fileInput');
+        const tocPages = document.getElementById('tocPages');
+        const parseBtn = document.getElementById('parseBtn');
+        const parseLoading = document.getElementById('parseLoading');
+        const chaptersTable = document.getElementById('chaptersTable');
+        const addChapter = document.getElementById('addChapter');
+        const contentStarts = document.getElementById('contentStarts');
+        const confirmBtn = document.getElementById('confirmBtn');
+        const backBtn = document.getElementById('backBtn');
+        const processing = document.getElementById('processing');
+        const results = document.getElementById('results');
+        const refreshBtn = document.getElementById('refreshBtn');
+        const docsList = document.getElementById('docsList');
+        const docSelect = document.getElementById('docSelect');
+        const searchMode = document.getElementById('searchMode');
+        const expandContext = document.getElementById('expandContext');
+        const contextLevels = document.getElementById('contextLevels');
+        const searchQuery = document.getElementById('searchQuery');
+        const searchBtn = document.getElementById('searchBtn');
+        const searchResults = document.getElementById('searchResults');
+
+        // Initialize
+        loadDocs();
+
+        // Step 1: Parse TOC
+        fileInput.onchange = () => parseBtn.disabled = !fileInput.files[0];
+        
+        parseBtn.onclick = async () => {
+            const file = fileInput.files[0];
+            if (!file) return;
+
+            parseBtn.disabled = true;
+            parseLoading.classList.remove('hidden');
+
+            try {
+                const form = new FormData();
+                form.append('file', file);
+                form.append('toc_pages', tocPages.value);
+
+                const res = await fetch(`${API}/parse-toc`, { method: 'POST', body: form });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail);
+
+                docId = data.doc_id;
+                showChapters(data.parsed_toc.chapters);
+                showStep(2);
+                alert('TOC parsed successfully!');
+
+            } catch (e) {
+                alert('Error: ' + e.message);
+                parseBtn.disabled = false;
+            } finally {
+                parseLoading.classList.add('hidden');
+            }
+        };
+
+        // Step 2: Review Chapters
+        function showChapters(chapters) {
+            chaptersTable.innerHTML = '';
+            chapters.forEach(ch => addChapterRow(ch.title, ch.start_page));
+        }
+
+        function addChapterRow(title = '', page = '') {
+            const row = chaptersTable.insertRow();
+            row.innerHTML = `
+                <td><input type="text" value="${title}" style="width:100%; margin:0;"></td>
+                <td><input type="number" value="${page}" style="width:100%; margin:0;"></td>
+                <td><button onclick="this.parentNode.parentNode.remove()" style="width:auto; margin:0;">Delete</button></td>
+            `;
+        }
+
+        addChapter.onclick = () => addChapterRow();
+
+        confirmBtn.onclick = async () => {
+            const chapters = [];
+            for (let row of chaptersTable.rows) {
+                const title = row.cells[0].querySelector('input').value.trim();
+                const page = parseInt(row.cells[1].querySelector('input').value);
+                if (title && page) chapters.push({ title, start_page: page });
+            }
+
+            if (!chapters.length) {
+                alert('Add at least one chapter');
+                return;
+            }
+
+            confirmBtn.disabled = true;
+            showStep(3);
+
+            try {
+                const form = new FormData();
+                form.append('doc_id', docId);
+                form.append('content_starts_at', contentStarts.value);
+                form.append('toc_data', JSON.stringify({ chapters }));
+
+                const res = await fetch(`${API}/confirm-toc`, { method: 'POST', body: form });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail);
+
+                processing.classList.add('hidden');
+                results.classList.remove('hidden');
+                results.innerHTML = `
+                    <div class="alert alert-success">
+                        Success! Built hierarchical trees: ${data.chapters_count} chapters with ${data.total_chunk_count} tree nodes
+                    </div>
+                    <button onclick="reset()">Process Another</button>
+                `;
+                loadDocs();
+
+            } catch (e) {
+                alert('Error: ' + e.message);
+                confirmBtn.disabled = false;
+                showStep(2);
+            }
+        };
+
+        backBtn.onclick = () => showStep(1);
+
+        function showStep(step) {
+            document.getElementById('step1').classList.toggle('hidden', step !== 1);
+            document.getElementById('step2').classList.toggle('hidden', step !== 2);
+            document.getElementById('step3').classList.toggle('hidden', step !== 3);
+        }
+
+        function reset() {
+            docId = null;
+            fileInput.value = '';
+            parseBtn.disabled = true;
+            confirmBtn.disabled = false;
+            processing.classList.remove('hidden');
+            results.classList.add('hidden');
+            showStep(1);
+        }
+
+        // Documents
+        async function loadDocs() {
+            try {
+                const res = await fetch(`${API}/documents`);
+                const data = await res.json();
+                docs = data.documents || [];
+                
+                docsList.innerHTML = docs.map(d => `
+                    <div style="border:1px solid #ddd; padding:10px; margin:10px 0;">
+                        <b>${d.filename || 'Document'}</b><br>
+                        ${d.chapters_count} chapters, ${d.total_chunk_count} tree nodes
+                        ${d.has_embeddings !== false ? ' ✅' : ' ❌'}
+                        ${d.is_hierarchical ? ' 🌳' : ''}
+                        <br><button onclick="selectDoc('${d.doc_id}')" class="small-btn">Select</button>
+                        <button onclick="showTreeStats('${d.doc_id}')" class="small-btn">Tree Stats</button>
+                    </div>
+                `).join('');
+
+                docSelect.innerHTML = '<option value="">Select document...</option>' +
+                    docs.filter(d => d.has_embeddings !== false)
+                        .map(d => `<option value="${d.doc_id}">${d.filename || 'Document'}</option>`)
+                        .join('');
+            } catch (e) {
+                docsList.innerHTML = 'Error loading documents';
+            }
+        }
+
+        async function showTreeStats(docId) {
+            try {
+                const res = await fetch(`${API}/documents/${docId}/tree-stats`);
+                const data = await res.json();
+                
+                let statsHtml = `<h4>Tree Statistics for Document</h4>`;
+                if (data.tree_structure) {
+                    statsHtml += `<p>Max Depth: ${data.tree_structure.max_depth} levels</p>`;
+                    statsHtml += `<p>Total Nodes: ${data.total_chunks}</p>`;
+                    
+                    if (data.level_details) {
+                        statsHtml += `<p>Level Breakdown:</p><ul>`;
+                        for (const [level, stats] of Object.entries(data.level_details)) {
+                            statsHtml += `<li>${level}: ${stats.chunk_count} nodes (avg ${stats.avg_word_count.toFixed(0)} words)</li>`;
+                        }
+                        statsHtml += `</ul>`;
+                    }
+                }
+                
+                alert(statsHtml);
+            } catch (e) {
+                alert('Error loading tree stats: ' + e.message);
+            }
+        }
+
+        refreshBtn.onclick = loadDocs;
+
+        // Search
+        function selectDoc(id) {
+            docSelect.value = id;
+            handleDocSelect();
+        }
+
+        docSelect.onchange = handleDocSelect;
+
+        async function handleDocSelect() {
+            const id = docSelect.value;
+            if (!id) {
+                searchQuery.disabled = true;
+                searchBtn.disabled = true;
+                return;
+            }
+
+            try {
+                searchQuery.disabled = false;
+                searchBtn.disabled = false;
+            } catch (e) {
+                alert('Error loading document');
+            }
+        }
+
+        searchBtn.onclick = async () => {
+            const query = searchQuery.value.trim();
+            const id = docSelect.value;
+            
+            if (!query || !id) return;
+
+            searchBtn.disabled = true;
+            searchResults.innerHTML = 'Searching hierarchical tree...';
+
+            try {
+                const params = new URLSearchParams({
+                    query: query,
+                    k: 5,
+                    search_mode: searchMode.value,
+                    expand_context: expandContext.checked,
+                    context_levels: contextLevels.value
+                });
+
+                const res = await fetch(`${API}/search/${id}?${params}`);
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail);
+
+                let results = data.results || [];
+
+                if (!results.length) {
+                    searchResults.innerHTML = 'No results found in hierarchical tree';
+                    return;
+                }
+
+                searchResults.innerHTML = `
+                    <div style="margin-bottom: 15px;">
+                        <strong>Search Mode:</strong> ${data.search_mode} | 
+                        <strong>Results:</strong> ${results.length} | 
+                        <strong>Context:</strong> ${data.expand_context ? 'Enabled' : 'Disabled'}
+                    </div>
+                ` + results.map(r => {
+                    const level = r.level || 3;
+                    const levelNames = {1: 'Chapter', 2: 'Section', 3: 'Paragraph', 4: 'Sentence'};
+                    const score = ((r.similarity_score || 0) * 100).toFixed(1);
+                    
+                    let html = `<div class="result">`;
+                    
+                    // Navigation path
+                    if (r.navigation_path) {
+                        html += `<div class="path">📍 ${r.navigation_path}</div>`;
+                    }
+                    
+                    // Level and similarity
+                    html += `<span class="level level-${level}">${levelNames[level] || `Level ${level}`}</span>`;
+                    html += `<strong>${score}% match</strong><br>`;
+                    
+                    // Main content - try multiple field names for hierarchical API compatibility
+                    const content = r.text || r.chunk_text || r.content || 
+                                  (r.target_chunk && r.target_chunk.text) ||
+                                  (r.chunk && r.chunk.text) ||
+                                  'Content not available';
+                    
+                    if (content && content !== 'Content not available') {
+                        html += `<div style="margin: 10px 0; background: white; padding: 10px; border-radius: 3px;">`;
+                        html += `${content.substring(0, 800)}${content.length > 800 ? '...' : ''}`;
+                        html += `</div>`;
+                    }
+                    
+                    // Enhanced context if available
+                    if (r.enriched_context && r.enriched_context !== content) {
+                        html += `<div class="context"><strong>Enhanced Context:</strong> ${r.enriched_context.substring(0, 300)}${r.enriched_context.length > 300 ? '...' : ''}</div>`;
+                    }
+                    
+                    // Ancestors if available
+                    if (r.ancestors && r.ancestors.length > 0) {
+                        html += `<div class="context"><strong>Parent Context:</strong> `;
+                        r.ancestors.forEach(ancestor => {
+                            const ancestorLevel = ancestor.level || 1;
+                            const ancestorTitle = ancestor.title || ancestor.text?.substring(0, 50) || 'Unknown';
+                            html += `<span class="level level-${ancestorLevel}">${ancestorTitle}</span> `;
+                        });
+                        html += `</div>`;
+                    }
+                    
+                    // Add debug info for development (remove in production)
+                    if (content === 'Content not available') {
+                        html += `<div style="font-size: 11px; color: #666; margin-top: 10px;">`;
+                        html += `Debug: Available fields: ${Object.keys(r).join(', ')}`;
+                        html += `</div>`;
+                    }
+                    
+                    html += `</div>`;
+                    return html;
+                }).join('');
+
+            } catch (e) {
+                searchResults.innerHTML = 'Search error: ' + e.message;
+            } finally {
+                searchBtn.disabled = false;
+            }
+        };
+
+        function alert(msg) {
+            const alerts = document.getElementById('alerts');
+            const type = msg.includes('Error') ? 'error' : 'success';
+            alerts.innerHTML = `<div class="alert alert-${type}">${msg}</div>`;
+            setTimeout(() => alerts.innerHTML = '', 5000);
+        }
+    </script>
+</body>
+</html>
